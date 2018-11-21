@@ -1,75 +1,94 @@
 import scipy
 from glob import glob
 import numpy as np
+import soundfile as sf
+import os
+from functools import reduce
+import scipy.signal
 
 class DataLoader():
-    def __init__(self, dataset_name, img_res=(128, 128)):
+    def __init__(self, dataset_name, path_A, path_B, bitdepth = 8, duration=10000, rate=144000):
         self.dataset_name = dataset_name
-        self.img_res = img_res
+        self.path_A = path_A
+        self.path_B = path_B
+        self.rate = rate
+        self.duration = duration
+        self.bitdepth = bitdepth
 
     def load_data(self, domain, batch_size=1, is_testing=False):
         data_type = "train%s" % domain if not is_testing else "test%s" % domain
-        path = glob('./datasets/%s/%s/*' % (self.dataset_name, data_type))
+        path = glob('./datasets/%s/%s/**' % (self.dataset_name, data_type))
+        files_grabbed = [glob(os.path.join(path, e)) for e in ['*.pdf', '*.cpp']]
+        print(files_grabbed)
+        batch_images = np.random.choice(files_grabbed, size=batch_size)
 
-        batch_images = np.random.choice(path, size=batch_size)
-
-        imgs = []
-        for img_path in batch_images:
-            img = self.imread(img_path)
+        auds = []
+        for sf_path in batch_images:
+            aud, rate = self.sfread(sf_path)
+            print(rate)
             if not is_testing:
-                img = scipy.misc.imresize(img, self.img_res)
+                sf = scipy.misc.imresize(sf, self.sf_res)
 
                 if np.random.random() > 0.5:
-                    img = np.fliplr(img)
+                    sf = np.fliplr(sf)
             else:
-                img = scipy.misc.imresize(img, self.img_res)
-            imgs.append(img)
+                sf = scipy.misc.imresize(sf, self.sf_res)
+            auds.append(sf)
 
-        imgs = np.array(imgs)/127.5 - 1.
+        sfs = np.array(sfs)/127.5 - 1.
 
-        return imgs
+        return sfs
 
     def load_batch(self, batch_size=1, is_testing=False):
-        data_type = "train" if not is_testing else "val"
-        path_A = glob('./datasets/%s/%sA/*' % (self.dataset_name, data_type))
-        path_B = glob('./datasets/%s/%sB/*' % (self.dataset_name, data_type))
-
-        self.n_batches = int(min(len(path_A), len(path_B)) / batch_size)
+        #data_type = "dev-clean" if not is_testing else "test-clean"
+        base_path = './datasets/%s' % (self.dataset_name,)
+        #print(os.path.join(base_path, self.path_A, "**/**", "*.flac"))
+        files_A = reduce(lambda x, y: x+y, [glob(os.path.join(base_path, self.path_A, "**/**", e)) for e in ['*.flac', ]])
+        files_B = reduce(lambda x, y: x+y, [glob(os.path.join(base_path, self.path_B, "**/**", e)) for e in ['*.flac', ]])
+        self.n_batches = int(min(len(files_A), len(files_B)) / batch_size)
         total_samples = self.n_batches * batch_size
-
+       
         # Sample n_batches * batch_size from each path list so that model sees all
         # samples from both domains
-        path_A = np.random.choice(path_A, total_samples, replace=False)
-        path_B = np.random.choice(path_B, total_samples, replace=False)
+        path_A = np.random.choice(files_A, total_samples, replace=False)
+        path_B = np.random.choice(files_B, total_samples, replace=False)
 
         for i in range(self.n_batches-1):
             batch_A = path_A[i*batch_size:(i+1)*batch_size]
             batch_B = path_B[i*batch_size:(i+1)*batch_size]
-            imgs_A, imgs_B = [], []
-            for img_A, img_B in zip(batch_A, batch_B):
-                img_A = self.imread(img_A)
-                img_B = self.imread(img_B)
+            sfs_A, sfs_B = [], []
+            for sf_A, sf_B in zip(batch_A, batch_B):
+                sf_A, sr_A = self.sfread(sf_A)
+                sf_B, sr_B = self.sfread(sf_B)
 
-                img_A = scipy.misc.imresize(img_A, self.img_res)
-                img_B = scipy.misc.imresize(img_B, self.img_res)
+                sf_A =  scipy.signal.resample(sf_A, int(float(len(sf_A)) / sr_A * self.rate ))
+                sf_A = sf_A[self.duration]
+                
+                sf_B =  scipy.signal.resample(sf_B, int(float(len(sf_B)) / sr_B * self.rate ))
+                sf_B = sf_B[self.duration]
+                
+                #sf_A = scipy.misc.imresize(sf_A, self.sf_res)
+                #sf_B = scipy.misc.imresize(sf_B, self.sf_res)
 
                 if not is_testing and np.random.random() > 0.5:
-                        img_A = np.fliplr(img_A)
-                        img_B = np.fliplr(img_B)
+                        sf_A = np.fliplr(sf_A)
+                        sf_B = np.fliplr(sf_B)
 
-                imgs_A.append(img_A)
-                imgs_B.append(img_B)
+                sfs_A.append(sf_A)
+                sfs_B.append(sf_B)
 
-            imgs_A = np.array(imgs_A)/127.5 - 1.
-            imgs_B = np.array(imgs_B)/127.5 - 1.
+            sfs_A = np.array(sfs_A)/127.5 - 1.
+            sfs_B = np.array(sfs_B)/127.5 - 1.
 
-            yield imgs_A, imgs_B
+            yield sfs_A, sfs_B
 
-    def load_img(self, path):
-        img = self.imread(path)
-        img = scipy.misc.imresize(img, self.img_res)
-        img = img/127.5 - 1.
-        return img[np.newaxis, :, :, :]
+    def load_sf(self, path):
+        sf, sr = self.sfread(path)
+        sf =  scipy.signal.resample(sf, int(float(len(sf)) / sr * self.rate ))
+        sf = sf[self.duration]
+        #sf = scipy.misc.imresize(sf, self.sf_res)
+        #sf = sf/127.5 - 1.
+        return sf[np.newaxis, :, :, :], self.rate
 
-    def imread(self, path):
-        return scipy.misc.imread(path, mode='RGB').astype(np.float)
+    def sfread(self, path):
+        return sf.read(path)

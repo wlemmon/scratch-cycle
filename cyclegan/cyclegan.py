@@ -4,9 +4,9 @@ import scipy
 from keras.datasets import mnist
 from keras_contrib.layers.normalization import InstanceNormalization
 from keras.layers import Input, Dense, Reshape, Flatten, Dropout, Concatenate
-from keras.layers import BatchNormalization, Activation, ZeroPadding2D
+from keras.layers import BatchNormalization, Activation, ZeroPadding1D
 from keras.layers.advanced_activations import LeakyReLU
-from keras.layers.convolutional import UpSampling2D, Conv2D
+from keras.layers.convolutional import UpSampling1D, Conv1D
 from keras.models import Sequential, Model
 from keras.optimizers import Adam
 import datetime
@@ -19,20 +19,26 @@ import os
 class CycleGAN():
     def __init__(self):
         # Input shape
-        self.img_rows = 128
-        self.img_cols = 128
-        self.channels = 3
-        self.img_shape = (self.img_rows, self.img_cols, self.channels)
+        self.duration = 10#00
+        #self.rate = 44100
+        #self.rate = 16000
+        self.rate = 16#000
+        self.bitdepth = 8
+        self.channels = 2
+        self.aud_shape = (self.duration * self.rate, self.channels)
 
         # Configure data loader
-        self.dataset_name = 'apple2orange'
+        self.dataset_name = 'librispeech/LibriSpeech'
         self.data_loader = DataLoader(dataset_name=self.dataset_name,
-                                      img_res=(self.img_rows, self.img_cols))
+                                        path_A = 'dev-clean',
+                                        path_B = 'train-clean-100',
+                                        bitdepth = self.bitdepth,
+                                      duration=self.duration, rate=self.rate)
 
 
         # Calculate output shape of D (PatchGAN)
-        patch = int(self.img_rows / 2**4)
-        self.disc_patch = (patch, patch, 1)
+        patch = int(self.duration / 2**4)
+        self.disc_patch = (patch, 1)
 
         # Number of filters in the first layer of G and D
         self.gf = 32
@@ -64,8 +70,8 @@ class CycleGAN():
         self.g_BA = self.build_generator()
 
         # Input images from both domains
-        img_A = Input(shape=self.img_shape)
-        img_B = Input(shape=self.img_shape)
+        img_A = Input(shape=self.aud_shape)
+        img_B = Input(shape=self.aud_shape)
 
         # Translate images to the other domain
         fake_B = self.g_AB(img_A)
@@ -101,17 +107,17 @@ class CycleGAN():
     def build_generator(self):
         """U-Net Generator"""
 
-        def conv2d(layer_input, filters, f_size=4):
+        def conv1d(layer_input, filters, f_size=4):
             """Layers used during downsampling"""
-            d = Conv2D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
+            d = Conv1D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
             d = LeakyReLU(alpha=0.2)(d)
             d = InstanceNormalization()(d)
             return d
 
-        def deconv2d(layer_input, skip_input, filters, f_size=4, dropout_rate=0):
+        def deconv1d(layer_input, skip_input, filters, f_size=4, dropout_rate=0):
             """Layers used during upsampling"""
-            u = UpSampling2D(size=2)(layer_input)
-            u = Conv2D(filters, kernel_size=f_size, strides=1, padding='same', activation='relu')(u)
+            u = UpSampling1D(size=2)(layer_input)
+            u = Conv1D(filters, kernel_size=f_size, strides=1, padding='same', activation='relu')(u)
             if dropout_rate:
                 u = Dropout(dropout_rate)(u)
             u = InstanceNormalization()(u)
@@ -119,21 +125,21 @@ class CycleGAN():
             return u
 
         # Image input
-        d0 = Input(shape=self.img_shape)
+        d0 = Input(shape=self.aud_shape)
 
         # Downsampling
-        d1 = conv2d(d0, self.gf)
-        d2 = conv2d(d1, self.gf*2)
-        d3 = conv2d(d2, self.gf*4)
-        d4 = conv2d(d3, self.gf*8)
+        d1 = conv1d(d0, self.gf)
+        d2 = conv1d(d1, self.gf*2)
+        d3 = conv1d(d2, self.gf*4)
+        d4 = conv1d(d3, self.gf*8)
 
         # Upsampling
-        u1 = deconv2d(d4, d3, self.gf*4)
-        u2 = deconv2d(u1, d2, self.gf*2)
-        u3 = deconv2d(u2, d1, self.gf)
+        u1 = deconv1d(d4, d3, self.gf*4)
+        u2 = deconv1d(u1, d2, self.gf*2)
+        u3 = deconv1d(u2, d1, self.gf)
 
-        u4 = UpSampling2D(size=2)(u3)
-        output_img = Conv2D(self.channels, kernel_size=4, strides=1, padding='same', activation='tanh')(u4)
+        u4 = UpSampling1D(size=2)(u3)
+        output_img = Conv1D(self.channels, kernel_size=4, strides=1, padding='same', activation='tanh')(u4)
 
         return Model(d0, output_img)
 
@@ -141,20 +147,20 @@ class CycleGAN():
 
         def d_layer(layer_input, filters, f_size=4, normalization=True):
             """Discriminator layer"""
-            d = Conv2D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
+            d = Conv1D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
             d = LeakyReLU(alpha=0.2)(d)
             if normalization:
                 d = InstanceNormalization()(d)
             return d
 
-        img = Input(shape=self.img_shape)
+        img = Input(shape=self.aud_shape)
 
         d1 = d_layer(img, self.df, normalization=False)
         d2 = d_layer(d1, self.df*2)
         d3 = d_layer(d2, self.df*4)
         d4 = d_layer(d3, self.df*8)
 
-        validity = Conv2D(1, kernel_size=4, strides=1, padding='same')(d4)
+        validity = Conv1D(1, kernel_size=4, strides=1, padding='same')(d4)
 
         return Model(img, validity)
 
@@ -221,8 +227,8 @@ class CycleGAN():
         os.makedirs('images/%s' % self.dataset_name, exist_ok=True)
         r, c = 2, 3
 
-        imgs_A = self.data_loader.load_data(domain="A", batch_size=1, is_testing=True)
-        imgs_B = self.data_loader.load_data(domain="B", batch_size=1, is_testing=True)
+        imgs_A = self.data_loader.load_data(domain="datasets/librispeech/LibriSpeech/dev-clean/1272", batch_size=1, is_testing=True)
+        imgs_B = self.data_loader.load_data(domain="datasets/librispeech/LibriSpeech/dev-clean/174", batch_size=1, is_testing=True)
 
         # Demo (for GIF)
         #imgs_A = self.data_loader.load_img('datasets/apple2orange/testA/n07740461_1541.jpg')
